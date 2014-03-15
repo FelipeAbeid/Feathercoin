@@ -52,6 +52,13 @@ bool fBenchmark = false;
 bool fTxIndex = false;
 unsigned int nCoinCacheSize = 5000;
 
+// The 1st hard fork
+const int nForkOne = 33000;
+// The 2nd hard fork
+const int nForkTwo = 87948;
+// The 3rd hard fork
+const int nForkThree = 200010;
+
 /** Fees smaller than this (in satoshi) are considered zero fee (for transaction creation) */
 int64 CTransaction::nMinTxFee = 2000000;
 /** Fees smaller than this (in satoshi) are considered zero fee (for relaying) */
@@ -1068,6 +1075,9 @@ uint256 static GetOrphanRoot(const CBlockHeader* pblock)
 int64 static GetBlockValue(int nHeight, int64 nFees)
 {
     int64 nSubsidy = 200 * COIN;
+	
+	if(nHeight >= nForkThree)
+		nSubsidy = 80 * COIN;
 
     // Subsidy is cut in half every 840000 blocks, which will occur approximately every 4 years
     nSubsidy >>= (nHeight / 840000); // Feathercoin: 840k blocks in ~4 years
@@ -1076,7 +1086,7 @@ int64 static GetBlockValue(int nHeight, int64 nFees)
 }
 
 int nTargetTimespan = 3.5 * 24 * 60 * 60; // 3.5 days
-static const int nTargetSpacing = 2.5 * 60; // 2.5 minutes
+int nTargetSpacing = 2.5 * 60; // 2.5 minutes
 
 unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock)
 {
@@ -1089,20 +1099,21 @@ unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBl
     // The next block
     int nHeight = pindexLast->nHeight + 1;
 
-    // The 1st hard fork
-    int nForkOne = 33000;
-    if(nHeight >= nForkOne)
-      nTargetTimespan = (7 * 24 * 60 * 60) / 8; // 7/8 days
+	if (nHeight >= nForkOne)
+		nTargetTimespan = (7 * 24 * 60 * 60) / 8; // 7/8 days
 
-    // The 2nd hard fork
-    int nForkTwo = 87948;
-    if((nHeight >= nForkTwo) || (fTestNet && (nHeight >= 2016)))
-      nTargetTimespan = (7 * 24 * 60 * 60) / 32; // 7/32 days
+    if ((nHeight >= nForkTwo) || (fTestNet && (nHeight >= 1008)))
+		nTargetTimespan = (7 * 24 * 60 * 60) / 32; // 7/32 days
 
-    // 2016 blocks initial, 504 after the 1st and 126 after the 2nd hard fork
+	if (nHeight >= nForkThree || (fTestNet && (nHeight >= 2010))) {
+        nTargetTimespan = (24 * 60 * 60) / 96; // 3.5 days
+        nTargetSpacing = 60; // 1 minutes
+	}
+
+    // 2016 blocks initial, 504 after the 1st, 126 after the 2nd hard fork, 15 after the 3rd hard fork
     int nInterval = nTargetTimespan / nTargetSpacing;
 
-    bool fHardFork = (nHeight == nForkOne) || (nHeight == nForkTwo);
+    bool fHardFork = (nHeight == nForkOne) || (nHeight == nForkTwo) || (nHeight == nForkThree);
     if(fTestNet) fHardFork = false;
 
     // Difficulty rules regular blocks
@@ -1142,7 +1153,7 @@ unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBl
     printf("RETARGET: nActualTimespan = %d before bounds\n", nActualTimespan);
 
     // Additional averaging over 4x nInterval window
-    if((nHeight >= nForkTwo) || (fTestNet && (nHeight > 4*nInterval))) {
+    if((nHeight >= nForkTwo) || (fTestNet && (nHeight > 2*nInterval))) {
         nInterval *= 4;
 
         const CBlockIndex* pindexFirst = pindexLast;
@@ -1161,6 +1172,39 @@ unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBl
 
         printf("RETARGET: nActualTimespanLong = %d, nActualTimeSpanAvg = %d, nActualTimespan (damped) = %d\n",
           nActualTimespanLong, nActualTimespanAvg, nActualTimespan);
+    }
+	
+	// Additional averaging over 120 and 480 block window
+	if((nHeight >= nForkThree) || (fTestNet && (nHeight > 2010))) {
+
+		// Average over a total of 32x nInterval
+        nInterval *= 32;
+
+        const CBlockIndex* pindexFirst = pindexLast;
+        const CBlockIndex* pindexFirstMedium = pindexLast;
+        const CBlockIndex* pindexFirstLong = pindexLast;
+		for(int i = 0; pindexFirst && i < nInterval; i++) {
+			if (i == 119) {
+                pindexFirstMedium = pindexFirst->pprev;
+			}
+            pindexFirstLong = pindexFirst->pprev;
+		}
+
+		int nActualTimespanMedium =
+            (pindexLast->GetBlockTime() - pindexFirstMedium->GetBlockTime())/8;
+
+        int nActualTimespanLong =
+			(pindexLast->GetBlockTime() - pindexFirstLong->GetBlockTime())/32;
+
+		// Average between short and long windows
+		int nActualTimespanAvg = (nActualTimespan + nActualTimespanMedium + nActualTimespanLong)/3;
+
+		// Apply .25 damping
+		nActualTimespan = nActualTimespanAvg + 3*nTargetTimespan;
+		nActualTimespan /= 4;
+
+		printf("RETARGET: nActualTimespanLong = %d, nActualTimeSpanAvg = %d, nActualTimespan (damped) = %d\n",
+		nActualTimespanLong, nActualTimespanAvg, nActualTimespan);
     }
 
     // The initial settings (4.0 difficulty limiter)
@@ -2209,13 +2253,19 @@ bool CBlock::AcceptBlock(CValidationState &state, CDiskBlockPos *dbp)
             return state.Invalid(error("AcceptBlock() : block's timestamp is too early"));
 
     // limit block in future accepted in chain to only a time window of 30 min
-    if (GetBlockTime() > GetAdjustedTime() + 30 * 60)
+    if (GetBlockTime() > GetAdjustedTime() + 30 * 60) {
+		return error("AcceptBlock() : block's timestamp too far in the future");
+	} else if ((nHeight >= nForkThree) && GetBlockTime() > GetAdjustedTime() + 15 * 60) { // 15 minutes
         return error("AcceptBlock() : block's timestamp too far in the future");
+	}
 
     // Check timestamp against prev it should not be more then 2 times the window
-    if ((nHeight > 87948) && (GetBlockTime() <= pindexPrev->GetBlockTime() - 2 * 30 * 60))
+    if ((nHeight > nForkTwo) && (GetBlockTime() <= pindexPrev->GetBlockTime() - 2 * 30 * 60)) {
         return error("AcceptBlock() : block's timestamp is too early compare to last block");
-			
+	} else if ((nHeight >= nForkThree) && (GetBlockTime() <= pindexPrev->GetBlockTime() - 15 * 60)) { // 15 minutes
+		return error("AcceptBlock() : block's timestamp is too early compare to last block");
+	}
+	
         // Check that all transactions are finalized
         BOOST_FOREACH(const CTransaction& tx, vtx)
             if (!tx.IsFinal(nHeight, GetBlockTime()))
