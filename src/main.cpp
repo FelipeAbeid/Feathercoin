@@ -1153,7 +1153,7 @@ unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBl
     printf("RETARGET: nActualTimespan = %d before bounds\n", nActualTimespan);
 
     // Additional averaging over 4x nInterval window
-    if((nHeight >= nForkTwo) || (fTestNet && (nHeight > 2*nInterval))) {
+    if(((nHeight >= nForkTwo) && (nHeight < nForkThree)) || (fTestNet && (nHeight > 2*nInterval) && (nHeight < 2010))) {
         nInterval *= 4;
 
         const CBlockIndex* pindexFirst = pindexLast;
@@ -1175,7 +1175,7 @@ unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBl
     }
 	
 	// Additional averaging over 120 and 480 block window
-	if((nHeight >= nForkThree) || (fTestNet && (nHeight > 2010))) {
+	if((nHeight >= nForkThree) || (fTestNet && (nHeight >= 2010))) {
 
 		// Average over a total of 32x nInterval
         nInterval *= 32;
@@ -2253,16 +2253,16 @@ bool CBlock::AcceptBlock(CValidationState &state, CDiskBlockPos *dbp)
             return state.Invalid(error("AcceptBlock() : block's timestamp is too early"));
 
     // limit block in future accepted in chain to only a time window of 30 min
-    if (GetBlockTime() > GetAdjustedTime() + 30 * 60) {
+    if ((nHeight < nForkThree) && GetBlockTime() > GetAdjustedTime() + 30 * 60) {
 		return error("AcceptBlock() : block's timestamp too far in the future");
-	} else if ((nHeight >= nForkThree) && GetBlockTime() > GetAdjustedTime() + 15 * 60) { // 15 minutes
+	} else if (GetBlockTime() > GetAdjustedTime() + 15 * 60) { // 15 minutes
         return error("AcceptBlock() : block's timestamp too far in the future");
 	}
 
     // Check timestamp against prev it should not be more then 2 times the window
-    if ((nHeight > nForkTwo) && (GetBlockTime() <= pindexPrev->GetBlockTime() - 2 * 30 * 60)) {
+    if ((nHeight > nForkTwo) && (nHeight < nForkThree) && (GetBlockTime() <= pindexPrev->GetBlockTime() - 2 * 30 * 60)) {
         return error("AcceptBlock() : block's timestamp is too early compare to last block");
-	} else if ((nHeight >= nForkThree) && (GetBlockTime() <= pindexPrev->GetBlockTime() - 15 * 60)) { // 15 minutes
+	} else if (GetBlockTime() <= pindexPrev->GetBlockTime() - 15 * 60) { // 15 minutes
 		return error("AcceptBlock() : block's timestamp is too early compare to last block");
 	}
 	
